@@ -1,0 +1,20 @@
+ROTAS CARBONITA — VERSÃO GOOGLE APPS SCRIPT — ATUALIZAÇÃO MOBILE IDA/VOLTA (V2)
+
+PARA QUEM JÁ INSTALOU: leia ATUALIZACAO-MOBILE-V2.md e substitua
+Client.html, Styles.html e Code.gs na implantação existente.
+NÃO execute instalarSistema de novo.
+
+1. Leia o README.md antes de colocar dados de estudantes no sistema.
+2. Crie uma Planilha Google PRIVADA na conta institucional.
+3. Abra Extensões > Apps Script e crie os arquivos:
+   Code.gs, Index.html, Styles.html, Client.html, QRCodeVendor.html.
+4. Configure ADMIN_NOME, ADMIN_LOGIN, ADMIN_SENHA_INICIAL nas
+   Propriedades do script; execute instalarSistema pelo EDITOR.
+5. Implantar > Nova implantação > Aplicativo da Web.
+6. Teste com usuários e estudantes FICTÍCIOS antes do uso oficial.
+
+GitHub: repositório de CÓDIGO, não de dados pessoais.
+O Apps Script é o responsável por hospedar o app neste pacote.
+NENHUM SERVIÇO SUPABASE É NECESSÁRIO.
+
+A conexão à sua conta Google NÃO foi realizada nesta entrega.

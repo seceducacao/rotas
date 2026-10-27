@@ -1,0 +1,236 @@
+/* Rotas Carbonita — Interface GAS HTMLService. Nenhum dado real é armazenado em localStorage. */
+(function(){'use strict';
+const STORE={get:k=>{try{return sessionStorage.getItem(k)||''}catch(e){return ''}},set:(k,v)=>{try{sessionStorage.setItem(k,v)}catch(e){}},remove:k=>{try{sessionStorage.removeItem(k)}catch(e){}}};
+const S={token:STORE.get('rc_session'),data:null,view:'dashboard',year:'',day:todayLocal(),sentido:STORE.get('rc_sentido')==='VOLTA'?'VOLTA':'IDA',route:'',filters:{search:'',school:'',route:'',stop:''},modal:null,busy:false,loading:false,menu:false,camera:null,scannerTimer:null,checking:false};
+const LABEL={dashboard:'Visão geral',students:'Estudantes',schools:'Escolas',classes:'Turmas',routes:'Rotas',stops:'Pontos',attendance:'Chamada',users:'Acessos',reports:'Relatórios'};
+const TYPE={student:'Estudante',school:'Escola',class:'Turma',route:'Rota',stop:'Ponto',user:'Usuário'};
+const NAV=[['dashboard','◫'],['students','♙'],['schools','▥'],['classes','▤'],['routes','⇄'],['stops','⌖'],['attendance','▣'],['reports','▥'],['users','⚙']];
+const $=id=>document.getElementById(id);
+const E=x=>String(x===undefined||x===null?'':x).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const a=(k)=>S.data?(S.data[k]||[]):[];
+const find=(key,id)=>a(key).find(r=>r.id===id);
+const val=(key,id,prop='nome')=>(find(key,id)||{})[prop]||'—';
+const initials=n=>String(n||'').trim().split(/\s+/).slice(0,2).map(x=>x[0]).join('').toUpperCase();
+function todayLocal(){return new Intl.DateTimeFormat('en-CA',{timeZone:'America/Sao_Paulo',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date());}
+function dateHuman(s){if(!s)return '—';const [y,m,d]=String(s).slice(0,10).split('-');return d+'/'+m+'/'+y;}
+function timeHuman(value){if(!value)return '';const date=new Date(value);return Number.isNaN(date.getTime())?String(value).slice(11,16):new Intl.DateTimeFormat('pt-BR',{timeZone:'America/Sao_Paulo',hour:'2-digit',minute:'2-digit',hour12:false}).format(date);}
+function api(action,data={}){return new Promise((resolve,reject)=>{
+  if(!window.google||!google.script||!google.script.run){reject(Error('Abra pelo endereço de implantação do Google Apps Script.'));return;}
+  google.script.run.withSuccessHandler(resolve).withFailureHandler(e=>reject(Error(e&&e.message||'Falha de comunicação.'))).api(action,S.token,data);
+});}
+function message(text,isError=false){const wrap=$('toast');if(!wrap)return;const t=document.createElement('div');t.className='toast'+(isError?' error':'');t.textContent=text;wrap.append(t);setTimeout(()=>t.remove(),4500);}
+function warn(e){const msg=e&&e.message||String(e);message(msg,true);if(/Sessão expirada|Sessão inválida|Usuário desativado/.test(msg)){S.token='';S.data=null;STORE.remove('rc_session');stopCamera();render();}}
+async function load(withSpin=false){if(!S.token)return; if(withSpin){S.loading=true;render();}
+  try{const d=await api('snapshot',{year:S.year||undefined,day:S.day});S.data=d;S.year=d.year;S.day=d.day;S.loading=false;render();}
+  catch(e){S.loading=false;warn(e);render();}}
+async function refresh(){if(!S.token||!S.data||S.checking||S.busy||S.camera||S.modal||document.hidden)return;
+  S.checking=true;try{const x=await api('updates',{version:S.data.version,year:S.year,day:S.day});if(x.changed){S.data=x;render();}}
+  catch(e){warn(e);}finally{S.checking=false;}}
+setInterval(refresh,25000);
+function user(){return S.data&&S.data.user||null;}
+function role(){return user()&&user().perfil||'';}
+function canEdit(){return role()==='secretaria'||role()==='escola';}
+function canSee(name){if(name==='users'||name==='schools')return role()==='secretaria';if(role()==='monitor')return ['dashboard','students','attendance','reports'].includes(name);return true;}
+function render(){if(!S.token){$('app').innerHTML=loginHtml();return;}if(!S.data){$('app').innerHTML='<div class="splash">Carregando o painel…</div>';return;}
+  if(user().trocarSenha==='SIM'){S.modal={type:'password',mandatory:true};}
+  if(!canSee(S.view))S.view='dashboard';
+  $('app').innerHTML=`<div class="shell ${S.menu?'menu-open':''}"><aside class="sidebar">
+    <div class="brand"><div class="brand-logo">▤</div><div><div class="brand-name">Rotas Carbonita</div><div class="brand-caption">TRANSPORTE ESCOLAR</div></div></div>
+    <div class="nav-group">Gestão da rede</div><nav class="nav-items">${NAV.filter(([v])=>canSee(v)).map(([v,ico])=>`<button type="button" class="nav-btn ${S.view===v?'active':''}" data-act="nav" data-view="${v}"><span class="nav-symbol">${ico}</span>${LABEL[v]}</button>`).join('')}</nav>
+    <div class="sidebar-bottom"><div class="online"><strong><span class="online-dot"></span>Dados conectados</strong><small>Google Sheets · consulta automática a cada 25 segundos.</small></div><div class="account"><div class="avatar">${E(initials(user().nome))}</div><div class="account-main"><strong>${E(user().nome)}</strong><span>${E({secretaria:'Secretaria Municipal',escola:'Unidade escolar',monitor:'Monitor de transporte'}[role()])}</span></div><button class="icon-btn" type="button" title="Sair" data-act="logout">⇥</button></div></div>
+  </aside><main class="main"><div class="topbar"><div style="display:flex;align-items:center;gap:10px"><button class="icon-btn mobile-menu" data-act="menu" aria-label="Abrir menu">☰</button><span class="crumb">Secretaria de Educação <span class="muted">/</span> <b>${E(LABEL[S.view])}</b></span></div>
+    <div class="topright"><select class="control" id="yearSelect" style="max-width:132px;font-weight:800" aria-label="Ano letivo">${a('years').map(y=>`<option value="${E(y)}" ${y===S.year?'selected':''}>Ano ${E(y)}</option>`).join('')}</select><button class="icon-btn" data-act="refresh" title="Atualizar">↻</button><button class="icon-btn" data-act="password" title="Alterar senha">⚙</button></div>
+  </div><div class="content">${S.loading?'<p>Atualizando os dados…</p>':content()}
+  <footer>Rotas Carbonita · Secretaria Municipal de Educação · Carbonita/MG · <span>Informações de acesso restrito</span></footer></div></main>${S.modal?modalHtml():''}</div>`;
+}
+function loginHtml(){return `<div class="auth-bg"><div class="auth-card"><div class="brand-logo">▤</div><h1 class="auth-title">Rotas Carbonita</h1><p class="auth-sub">Gestão do Transporte Escolar da Rede Municipal de Educação de Carbonita/MG.</p><form id="loginForm"><div class="field"><label for="login">Login individual</label><input id="login" name="login" autocomplete="username" placeholder="Seu usuário" required></div><div class="field"><label for="password">Senha</label><input id="password" name="password" type="password" autocomplete="current-password" placeholder="Sua senha de acesso" required></div><button class="btn primary" style="width:100%;margin-top:8px" type="submit" ${S.busy?'disabled':''}>${S.busy?'Entrando…':'Entrar no sistema'}</button></form><p class="auth-note">Apenas usuários cadastrados e autorizados pela Secretaria Municipal de Educação podem acessar. Não compartilhe seus dados de login.</p></div></div>`;}
+function hero(title,description,buttons=''){return `<div class="eyebrow">Rede Municipal de Educação · ${E(S.year)}</div><div class="hero"><div><h1>${E(title)}</h1><p>${E(description)}</p></div><div class="actions">${buttons}<button class="btn" data-act="print">▤ Imprimir</button></div></div>`;}
+function plus(type){return `<button class="btn primary" data-act="new" data-type="${type}">＋ ${type==='student'?'Novo estudante':'Adicionar '+TYPE[type].toLowerCase()}</button>`;}
+function stat(title,num,icon,foot){return `<div class="stat"><div class="stat-head">${E(title)} <span class="stat-ico">${icon}</span></div><div class="stat-number">${E(num)}</div><div class="stat-meta">${E(foot)}</div></div>`;}
+function stats(){const assigned=a('students').filter(x=>!!x.rotaId).length;const present=a('calls').filter(c=>c.status==='PRESENTE'&&c.sentido===S.sentido).length;
+  return `<div class="stats">${stat('Estudantes',a('students').length,'♙','Cadastrados no ano')}${stat('Rotas ativas',a('routes').length,'⇄','Rotas autorizadas')}${stat('Pontos de embarque',a('stops').length,'⌖','Pontos cadastrados')}${stat('Com rota definida',assigned,'✓',a('students').length-assigned+' pendentes')}</div>`;}
+function content(){switch(S.view){case 'dashboard':return dashboard();case 'students':return studentsScreen();case 'schools':return listScreen('school','schools');case 'classes':return listScreen('class','classes');case 'routes':return listScreen('route','routes');case 'stops':return listScreen('stop','stops');case 'users':return usersScreen();case 'attendance':return attendanceScreen();case 'reports':return reportsScreen();default:return dashboard();}}
+function filtersHtml(){const f=S.filters,allowedSchools=a('schools'),routes=a('routes').filter(r=>!f.school||r.escolaId===f.school),stops=a('stops').filter(p=>!f.route||p.rotaId===f.route);
+  return `<div class="panel"><div class="panel-head"><div><div class="panel-title">Encontre estudantes rapidamente</div><div class="panel-sub">Combine escola, rota e ponto para refinar sua busca.</div></div><button class="btn small" data-act="resetFilters">Limpar filtros</button></div><div class="filters"><div class="search"><input class="control" id="searchStudents" aria-label="Buscar estudante" value="${E(f.search)}" placeholder="Buscar pelo nome do estudante…" autocomplete="off"></div>
+  <select class="control" id="filterSchool" aria-label="Filtrar escola"><option value="">Todas as escolas</option>${options(allowedSchools,f.school)}</select>
+  <select class="control" id="filterRoute" aria-label="Filtrar rota"><option value="">Todas as rotas</option>${options(routes,f.route)}</select>
+  <select class="control" id="filterStop" aria-label="Filtrar ponto"><option value="">Todos os pontos</option>${options(stops,f.stop)}</select></div></div>`;}
+function options(items,selected){return items.map(x=>`<option value="${E(x.id)}" ${x.id===selected?'selected':''}>${E(x.nome)}</option>`).join('');}
+function filteredStudents(){const f=S.filters,term=f.search.trim().toLowerCase();return a('students').filter(x=>(!f.school||x.escolaId===f.school)&&(!f.route||x.rotaId===f.route)&&(!f.stop||x.pontoId===f.stop)&&(!term||x.nome.toLowerCase().includes(term)||val('classes',x.turmaId).toLowerCase().includes(term))).sort((x,y)=>x.nome.localeCompare(y.nome,'pt-BR'));}
+function studentCard(s){const pending=!s.rotaId;
+  return `<article class="student-card"><div class="student-head"><div class="student-avatar">${E(initials(s.nome))}</div><div class="student-head-title"><b title="${E(s.nome)}">${E(s.nome)}</b><small>${E(val('schools',s.escolaId))}</small></div><span class="tag ${pending?'warn':''}">${pending?'Sem rota':'Vinculado'}</span></div><div class="detail-list">${detail('Turma',val('classes',s.turmaId))}${detail('Rota',val('routes',s.rotaId))}${detail('Ponto',val('stops',s.pontoId))}${s.responsavel?detail('Responsável',s.responsavel):''}${s.celular?detail('Celular',s.celular):''}</div><div class="student-actions">${canEdit()?`<button class="link-btn" data-act="edit" data-type="student" data-id="${E(s.id)}">Editar estudante</button><button class="link-btn" data-act="badge" data-id="${E(s.id)}">▦ Crachá QR</button>`:pending?`<button class="link-btn" data-act="edit" data-type="student" data-id="${E(s.id)}">Definir rota e ponto</button>`:`<span class="pill">Minha rota</span>`}</div></article>`;}
+function detail(label,value){return `<div class="detail-item"><span>${E(label)}</span><b title="${E(value)}">${E(value)}</b></div>`;}
+function studentResults(items){return `<div class="section-line"><h2>Estudantes <span>${items.length} registros</span></h2><button class="btn small" data-act="export" data-what="students">↓ CSV</button></div>${items.length?`<div class="cards">${items.map(studentCard).join('')}</div>`:empty('Nenhum estudante encontrado','Experimente limpar os filtros ou cadastre novos estudantes.')}`;}
+function empty(t,p){return `<div class="empty"><div class="empty-icon">◎</div><b>${E(t)}</b><div>${E(p)}</div></div>`;}
+// Ida e volta são ações de EMBARQUE distintas. Trocar o sentido apenas muda a tela;
+// o registro ocorre exclusivamente quando o monitor confirma um estudante ou lê seu QR.
+function journeyButtons(context='attendance'){
+  const shortcut=context==='shortcut', id=shortcut?'quick':'call';
+  const item=(direction,label,description,glyph)=>`<button type="button" class="journey-option ${S.sentido===direction?'selected':''} ${direction==='VOLTA'?'journey-return':''}" data-act="chooseDirection" data-direction="${direction}" data-context="${id}" aria-label="${label}: ${description}" aria-pressed="${S.sentido===direction?'true':'false'}" ${S.busy?'disabled':''}><span class="journey-icon" aria-hidden="true">${glyph}</span><span class="journey-copy"><strong>${label}</strong><small>${description}</small></span><span class="journey-check" aria-hidden="true">✓</span></button>`;
+  return `<div class="journey-selector${shortcut?' is-shortcut':''}" role="group" aria-label="Escolha o sentido da viagem">${item('IDA','Ida','Para a escola','↗')}${item('VOLTA','Volta','Para casa','↙')}</div>`;
+}
+function mobileQuickAttendance(){
+  if(role()!=='monitor'&&role()!=='secretaria')return '';
+  return `<section class="quick-trip-panel" aria-label="Acesso rápido à chamada"><div class="quick-trip-label">CHAMADA DO TRANSPORTE <span>Toque em um trajeto para iniciar</span></div>${journeyButtons('shortcut')}</section>`;
+}
+function dashboard(){return hero('Visão geral','Acompanhe estudantes, escolas, rotas e pontos num único lugar.',canEdit()?plus('student'):'')+mobileQuickAttendance()+stats()+filtersHtml()+studentResults(filteredStudents().slice(0,12));}
+function studentsScreen(){return hero('Estudantes transportados','Cadastros e informações de transporte organizados por escola e rota.',canEdit()?plus('student'):'')+filtersHtml()+studentResults(filteredStudents());}
+function subtitles(type,obj){switch(type){case 'school':return 'Escola ativa';case 'class':return val('schools',obj.escolaId)+' · '+obj.ano;case 'route':return val('schools',obj.escolaId)+' · '+obj.ano;case 'stop':return val('routes',obj.rotaId)+' · Ordem '+obj.ordem;default:return '';}}
+function listScreen(type,key){const data=a(key);const title={school:'Escolas',class:'Turmas',route:'Rotas',stop:'Pontos'}[type],desc={school:'Unidades da rede municipal de educação.',class:'Turmas vinculadas às escolas e ao ano letivo.',route:'Rotas de transporte escolar vinculadas às escolas.',stop:'Pontos de embarque e desembarque de cada rota.'}[type];
+  return hero(title,desc,canEdit()?plus(type):'')+`<div class="panel"><div class="panel-head"><div><div class="panel-title">${title} cadastradas</div><div class="panel-sub">${data.length} registros ativos</div></div><button class="btn small" data-act="export" data-what="${key}">↓ CSV</button></div>${data.length?`<div class="rows">${data.map((o,i)=>`<div class="list-row"><div class="list-number">${String(i+1).padStart(2,'0')}</div><div class="list-main"><b>${E(o.nome)}</b><small>${E(subtitles(type,o))}${o.descricao?' · '+E(o.descricao):''}</small></div><div class="list-actions">${canEdit()?`<button class="btn small" data-act="edit" data-type="${type}" data-id="${E(o.id)}">Editar</button><button class="btn small danger" data-act="disable" data-type="${type}" data-id="${E(o.id)}">Desativar</button>`:''}</div></div>`).join('')}</div>`:empty('Nenhum registro','Crie o primeiro cadastro para esta seção.')}</div>`;}
+function attendanceScreen(){
+  const rt=a('routes');
+  if(!S.route||!rt.some(r=>r.id===S.route))S.route=rt[0]&&rt[0].id||'';
+  const items=a('students').filter(s=>s.rotaId===S.route).sort((x,y)=>x.nome.localeCompare(y.nome,'pt-BR'));
+  const calls=a('calls').filter(c=>c.sentido===S.sentido);
+  const present=items.filter(x=>calls.some(c=>c.estudanteId===x.id&&c.status==='PRESENTE')).length;
+  const absent=items.filter(x=>calls.some(c=>c.estudanteId===x.id&&c.status==='AUSENTE')).length;
+  const destination=S.sentido==='IDA'?'para a escola':'para casa';
+  const transportTitle=S.sentido==='IDA'?'Embarque para a escola':'Embarque de volta para casa';
+  return hero('Chamada do transporte','Selecione Ida ou Volta antes de registrar o embarque.')+
+  `<section class="journey-panel" aria-label="Selecionar ida ou volta"><div class="journey-eyebrow">TIPO DE VIAGEM</div>${journeyButtons()}<div class="journey-description" role="status" aria-live="polite"><span aria-hidden="true">●</span> ${E(transportTitle)} <span class="journey-date-caption">· ${E(dateHuman(S.day))}</span></div></section>`+
+  `<div class="panel call-settings-panel"><div class="panel-head"><div><div class="panel-title">Data e rota</div><div class="panel-sub">O registro salva estudante, trajeto, data, horário e monitor.</div></div></div><div class="call-settings"><label for="callDay">Data<input type="date" class="control" id="callDay" value="${E(S.day)}"></label><label for="callRoute">Rota<select class="control" id="callRoute">${options(rt,S.route)}</select></label></div>
+    <div class="call-summary" role="status"><span><strong>${present}</strong> embarcaram</span><span><strong>${absent}</strong> não embarcaram</span><span><strong>${items.length-present-absent}</strong> aguardando</span></div>
+    ${role()!=='escola'&&S.route?`<div class="scanner-heading"><b>Ler crachá</b><small>Confirmar embarque ${E(destination)}</small></div><div class="scanner-actions"><button class="btn primary" data-act="startCamera" ${S.busy?'disabled':''}>▦ Ler QR com câmera</button><div class="scanner-manual"><label for="qrManual" class="sr-only">Código do crachá</label><input class="control" id="qrManual" placeholder="Código do crachá (TC:...)" autocomplete="off"><button class="btn" data-act="qrManual" ${S.busy?'disabled':''}>Confirmar QR</button></div></div><div id="scannerArea"></div>`:''}</div>
+    <div class="panel call-list-panel"><div class="panel-head"><div><div class="panel-title">${E(transportTitle)}</div><div class="panel-sub">${items.length} estudantes · ${E(val('routes',S.route))}</div></div><button class="btn small" data-act="export" data-what="calls">↓ CSV</button></div>${items.length?items.map(s=>{const c=calls.find(x=>x.estudanteId===s.id),status=c?c.status:'PENDENTE';return `<div class="call-row ${status==='PRESENTE'?'is-boarded':''}"><div class="student-avatar">${E(initials(s.nome))}</div><div class="list-main"><b>${E(s.nome)}</b><small>${E(val('stops',s.pontoId))}${c&&c.registradoEm?' · Registrado às '+E(timeHuman(c.registradoEm)):''}</small></div><span class="call-status ${status}">${E({PRESENTE:'Embarcou',AUSENTE:'Não embarcou',PENDENTE:'Aguardando'}[status])}</span>${role()!=='escola'?`<div class="call-row-buttons"><button class="btn small board-btn" data-act="mark" data-id="${E(s.id)}" data-status="PRESENTE" ${status==='PRESENTE'||S.busy?'disabled':''}>✓ Embarcou</button><button class="btn small" data-act="mark" data-id="${E(s.id)}" data-status="AUSENTE" ${status==='AUSENTE'||S.busy?'disabled':''}>Não embarcou</button></div>`:''}</div>`}).join(''):empty('Não há estudantes na rota','Escolha outra rota ou vincule estudantes primeiro.')}</div>`;
+}
+function reportsScreen(){const r=a('routes').map(rt=>({route:rt,students:a('students').filter(s=>s.rotaId===rt.id)}));const pending=a('students').filter(s=>!s.rotaId);
+  return hero('Relatórios e impressão','Resumo consolidado dos estudantes e das rotas no ano selecionado.')+stats()+`<div class="panel"><div class="panel-head"><div><div class="panel-title">Consolidado por rota</div><div class="panel-sub">Imprima esta página ou exporte os dados em CSV.</div></div><button class="btn small" data-act="export" data-what="routesSummary">↓ CSV</button></div><div class="table-wrap"><table class="data-table"><thead><tr><th>Escola</th><th>Rota</th><th>Estudantes</th><th>Pontos</th></tr></thead><tbody>${r.map(x=>`<tr><td>${E(val('schools',x.route.escolaId))}</td><td>${E(x.route.nome)}</td><td>${x.students.length}</td><td>${a('stops').filter(p=>p.rotaId===x.route.id).length}</td></tr>`).join('')}</tbody></table></div></div><div class="panel"><div class="panel-head"><div><div class="panel-title">Aguardando definição de rota</div><div class="panel-sub">${pending.length} estudantes sem rota</div></div></div>${pending.length?pending.map(s=>`<div class="list-row"><div class="list-main"><b>${E(s.nome)}</b><small>${E(val('schools',s.escolaId))} · ${E(val('classes',s.turmaId))}</small></div></div>`).join(''):empty('Todos os estudantes estão vinculados','Não há pendências de rota entre os estudantes visíveis.')}</div>${role()==='secretaria'?`<div class="panel"><div class="panel-head"><div><div class="panel-title">Histórico recente de alterações</div><div class="panel-sub">Últimos 80 eventos registrados</div></div></div><div class="table-wrap"><table class="data-table"><thead><tr><th>Data</th><th>Usuário</th><th>Ação</th><th>Tipo</th></tr></thead><tbody>${a('audit').map(x=>`<tr><td>${E(x.data.replace('T',' ').slice(0,19))}</td><td>${E(val('users',x.usuarioId,'nome'))}</td><td>${E(x.acao)}</td><td>${E(x.entidade)}</td></tr>`).join('')}</tbody></table></div></div>`:''}`;}
+function usersScreen(){const users=a('users');return hero('Usuários e acessos','Defina quem pode consultar ou alterar as informações.',`<button class="btn primary" data-act="new" data-type="user">＋ Novo usuário</button><button class="btn" data-act="newYear">＋ Ano letivo</button>`)+`<div class="tip">O monitor recebe acesso somente às rotas atribuídas pela Secretaria. A escola acessa somente seus próprios registros. As senhas nunca são exibidas nesta tela.</div><div class="panel"><div class="panel-head"><div><div class="panel-title">Contas cadastradas</div><div class="panel-sub">${users.length} usuários</div></div><button class="btn small" data-act="export" data-what="users">↓ CSV</button></div><div class="rows">${users.map(u=>`<div class="list-row"><div class="avatar">${E(initials(u.nome))}</div><div class="list-main"><b>${E(u.nome)} ${u.ativo==='NAO'?'<span class="tag warn">Inativo</span>':''}</b><small>${E(u.login)} · ${E({secretaria:'Secretaria',escola:'Escola',monitor:'Monitor'}[u.perfil])}${u.escolaId?' · '+E(val('schools',u.escolaId)):''}</small></div><div class="list-actions"><button class="btn small" data-act="edit" data-type="user" data-id="${E(u.id)}">Editar</button>${u.perfil==='monitor'?`<button class="btn small" data-act="assign" data-id="${E(u.id)}">Atribuir rotas</button>`:''}</div></div>`).join('')}</div></div>`;}
+function field(k,label,value,placeholder='',extra=''){return `<div class="field"><label for="f_${k}">${E(label)}</label><input id="f_${k}" name="${k}" value="${E(value||'')}" placeholder="${E(placeholder)}" ${extra}></div>`;}
+function selectField(k,label,items,selected,placeholder='Selecione uma opção',extra=''){return `<div class="field"><label for="f_${k}">${E(label)}</label><select id="f_${k}" name="${k}" ${extra}><option value="">${E(placeholder)}</option>${options(items,selected)}</select></div>`;}
+function modalHtml(){const m=S.modal;if(!m)return '';let body='',title='',sub='',submit='Salvar alterações';
+  if(m.type==='password'){title='Alterar senha';sub=m.mandatory?'Por segurança, escolha uma senha individual para continuar.':'Atualize sua senha de acesso.';body=`<form id="modalForm" data-form="password">${field('current','Senha atual','','Senha atual','type="password" required autocomplete="current-password"')}${field('next','Nova senha (mínimo 12 caracteres)','','Nova senha','type="password" minlength="12" required autocomplete="new-password"')}${field('confirm','Confirme a nova senha','','Repita a nova senha','type="password" minlength="12" required autocomplete="new-password"')}${modalActions(m.mandatory)}</form>`;}
+  else if(m.type==='year'){title='Novo ano letivo';sub='Os estudantes antigos permanecem no histórico. Cadastre turmas, rotas e estudantes para o novo ano.';body=`<form id="modalForm" data-form="year">${field('year','Ano letivo',String(Number(S.year)+1),'Ex.: 2027','pattern="20[0-9]{2}" required')}${modalActions()}</form>`;}
+  else if(m.type==='assign'){const u=find('users',m.id),assign=a('assignments').filter(x=>x.usuarioId===m.id).map(x=>x.rotaId);title='Rotas do monitor';sub=u?u.nome:'';body=`<form id="modalForm" data-form="assign"><div class="tip">Atribuições exibidas apenas para ${E(S.year)}. Troque o ano no painel para atribuir rotas de outro período.</div><div class="select-list">${a('routes').map(r=>`<label class="check-row"><input type="checkbox" name="routeId" value="${E(r.id)}" ${assign.includes(r.id)?'checked':''}><span>${E(r.nome)} · ${E(val('schools',r.escolaId))}</span></label>`).join('')||'<div class="empty">Cadastre uma rota antes de atribuir.</div>'}</div>${modalActions()}</form>`;}
+  else{const type=m.type,item=m.draft||{},edit=!!m.id;title=(edit?'Editar ':'Cadastrar ')+TYPE[type].toLowerCase();sub='Os dados serão salvos no Google Sheets e atualizados nos demais acessos.';submit=edit?'Salvar alterações':'Cadastrar';
+    const schools=a('schools'), schoolId=role()==='escola'?user().escolaId:item.escolaId||'';
+    const cls=a('classes').filter(x=>x.escolaId===schoolId),routes=a('routes').filter(x=>x.escolaId===schoolId),routeId=item.rotaId||'',points=a('stops').filter(x=>x.rotaId===routeId);
+    if(type==='student'&&role()==='monitor'){
+      title='Vincular estudante à rota';sub='Monitores podem vincular estudantes pendentes às próprias rotas e ajustar seus pontos.';
+      const ownRoutes=a('routes').filter(r=>r.escolaId===item.escolaId);
+      body=`<form id="modalForm" data-form="student"><div class="tip"><b>${E(item.nome)}</b><div>${E(val('schools',item.escolaId))}</div></div>${selectField('rotaId','Minha rota',ownRoutes,item.rotaId,'Escolha a rota','required data-cascade="yes"')}${selectField('pontoId','Ponto',a('stops').filter(x=>x.rotaId===routeId),item.pontoId,'Selecione o ponto','required')}${modalActions()}</form>`;
+    }else{
+      if(type==='school')body=field('nome','Nome da escola',item.nome,'Ex.: Escola Municipal…','required maxlength="140"');
+      if(type==='class'||type==='route')body=(role()==='secretaria'?selectField('escolaId','Escola',schools,schoolId,'Selecione a escola','required'):'')+field('nome',type==='class'?'Nome da turma':'Nome da rota',item.nome,type==='class'?'Ex.: 5º ano A':'Ex.: Rota Rural 01','required maxlength="140"')+(type==='route'?field('descricao','Descrição / observação',item.descricao,'Trecho ou região atendida','maxlength="250"'):'');
+      if(type==='stop')body=selectField('rotaId','Rota',a('routes'),item.rotaId,'Selecione uma rota','required')+field('nome','Nome do ponto',item.nome,'Ex.: Fazenda Boa Vista','required')+field('ordem','Ordem do ponto',item.ordem||'1','Número','type="number" min="1" max="999"');
+      if(type==='student')body=(role()==='secretaria'?selectField('escolaId','Escola',schools,schoolId,'Selecione uma escola','required data-cascade="yes"'):'')+field('nome','Nome completo do estudante',item.nome,'Nome e sobrenome','required')+selectField('turmaId','Turma',cls,item.turmaId,'Selecione a turma','required')+selectField('rotaId','Rota',routes,item.rotaId,'A definir','data-cascade="yes"')+selectField('pontoId','Ponto',points,item.pontoId,'A definir')+field('responsavel','Responsável',item.responsavel,'Nome do responsável','required')+field('celular','Celular do responsável',item.celular,'(38) 99999-9999','type="tel"');
+      if(type==='user')body=field('nome','Nome completo',item.nome,'Nome do usuário','required')+field('login','Login',item.login,'nome.sobrenome','required')+`<div class="field"><label for="f_perfil">Perfil de acesso</label><select name="perfil" id="f_perfil" data-cascade="yes" required><option value="secretaria" ${item.perfil==='secretaria'?'selected':''}>Secretaria</option><option value="escola" ${item.perfil==='escola'?'selected':''}>Escola</option><option value="monitor" ${item.perfil==='monitor'?'selected':''}>Monitor</option></select></div>`+(item.perfil==='escola'?selectField('escolaId','Escola',schools,item.escolaId,'Selecione uma escola','required'):'')+field('password',edit?'Redefinir senha (deixe vazio para manter)':'Senha temporária (mín. 12 caracteres)','',edit?'Opcional':'Mínimo 12 caracteres',edit?'type="password" minlength="12"':'type="password" minlength="12" required')+(edit?`<div class="field"><label for="f_ativo">Situação</label><select id="f_ativo" name="ativo"><option value="SIM" ${item.ativo!=='NAO'?'selected':''}>Ativo</option><option value="NAO" ${item.ativo==='NAO'?'selected':''}>Inativo</option></select></div>`:'')+`<div class="tip">A senha temporária deverá ser alterada pelo usuário no primeiro acesso.</div>`;
+      body=`<form id="modalForm" data-form="${E(type)}"><div class="form-grid">${body}</div>${modalActions(false,submit)}</form>`;
+    }
+  }
+  return `<div class="modal-mask" data-act="overlay"><div class="modal" role="dialog" aria-modal="true" aria-label="${E(title)}"><div class="modal-head"><div><h2>${E(title)}</h2><p>${E(sub)}</p></div>${m.mandatory?'':`<button class="icon-btn" data-act="closeModal" type="button" title="Fechar">✕</button>`}</div>${body}</div></div>`;
+}
+function modalActions(mandatory=false,label='Salvar alterações'){return `<div class="modal-actions">${mandatory?'':`<button class="btn" type="button" data-act="closeModal">Cancelar</button>`}<button class="btn primary" type="submit" ${S.busy?'disabled':''}>${S.busy?'Salvando…':label}</button></div>`;}
+function csvCell(v){const s=String(v===undefined?'':v);const safe=/^[=+@\-]/.test(s)?"'"+s:s;return '"'+safe.replace(/"/g,'""')+'"';}
+function exportCSV(what){let headers=[],rows=[];
+  if(what==='students'){headers=['Estudante','Escola','Turma','Rota','Ponto','Responsável','Celular','Ano'];rows=filteredStudents().map(s=>[s.nome,val('schools',s.escolaId),val('classes',s.turmaId),val('routes',s.rotaId),val('stops',s.pontoId),s.responsavel,s.celular,s.ano]);}
+  else if(what==='calls'){headers=['Estudante','Rota','Ponto','Data','Sentido','Situação','Registrado em'];rows=a('students').filter(s=>s.rotaId===S.route).map(s=>{const c=a('calls').find(x=>x.estudanteId===s.id&&x.sentido===S.sentido);return[s.nome,val('routes',s.rotaId),val('stops',s.pontoId),S.day,S.sentido,c?c.status:'PENDENTE',c?c.registradoEm:''];});}
+  else if(what==='routesSummary'){headers=['Escola','Rota','Estudantes','Pontos'];rows=a('routes').map(r=>[val('schools',r.escolaId),r.nome,a('students').filter(s=>s.rotaId===r.id).length,a('stops').filter(p=>p.rotaId===r.id).length]);}
+  else if(what==='users'){headers=['Nome','Login','Perfil','Escola','Situação'];rows=a('users').map(u=>[u.nome,u.login,u.perfil,val('schools',u.escolaId),u.ativo]);}
+  else{const cols={schools:['nome'],classes:['nome','ano','escolaId'],routes:['nome','ano','escolaId','descricao'],stops:['nome','rotaId','ordem']}[what];if(!cols)return;headers=cols;rows=a(what).map(x=>cols.map(c=>c==='escolaId'?val('schools',x[c]):c==='rotaId'?val('routes',x[c]):x[c]));}
+  const text='\ufeff'+[headers,...rows].map(row=>row.map(csvCell).join(';')).join('\r\n');
+  const link=document.createElement('a'),url=URL.createObjectURL(new Blob([text],{type:'text/csv;charset=utf-8;'}));link.href=url;link.download='Rotas_Carbonita_'+what+'_'+S.year+'.csv';document.body.append(link);link.click();link.remove();setTimeout(()=>URL.revokeObjectURL(url),2000);
+}
+function printBadge(id){const s=find('students',id);if(!s||!s.qrToken){message('Crachá disponível somente para Escola e Secretaria.',true);return;}
+  const svg=window.makeQrSvg('TC:'+s.qrToken);const html=`<!doctype html><html lang="pt-BR"><head><meta charset="UTF-8"><title>Crachá escolar</title><style>body{font-family:Arial,sans-serif;color:#173756;text-align:center;padding:25px}.card{display:inline-block;border:2px solid #e0e9f1;border-radius:16px;padding:28px;width:310px}h2{font-size:19px}h3{font-size:16px;margin-top:20px}small{color:#698297}svg{width:210px;height:210px}p{font-size:13px}button{padding:10px 24px;margin:20px;border:0;border-radius:9px;background:#2870d5;color:white;cursor:pointer}@media print{button{display:none}}</style></head><body><div class="card"><h2>TRANSPORTE ESCOLAR</h2><small>REDE MUNICIPAL · CARBONITA/MG</small><h3>${E(s.nome)}</h3><p>${E(val('schools',s.escolaId))}<br>${E(val('classes',s.turmaId))}</p>${svg}<p><b>Rota:</b> ${E(val('routes',s.rotaId))}<br><b>Ponto:</b> ${E(val('stops',s.pontoId))}</p><small>Uso exclusivo no transporte escolar · ${E(S.year)}</small></div><div><button onclick="window.print()">Imprimir crachá</button></div></body></html>`;
+  const win=window.open('','_blank','width=465,height=700');if(!win){message('Permita janelas para imprimir o crachá.',true);return;}win.document.open();win.document.write(html);win.document.close();}
+function openModal(type,id){stopCamera();const key={student:'students',school:'schools',class:'classes',route:'routes',stop:'stops',user:'users'}[type];const old=id?find(key,id):null;
+  const draft=old?{...old}:{};if(type==='user'&&!id)draft.perfil='monitor';if(type==='student'&&role()==='escola')draft.escolaId=user().escolaId;
+  S.modal={type,id:id||null,draft};render();setTimeout(()=>$('modalForm')&&$('modalForm').querySelector('input,select')?.focus(),50);}
+function formData(form){return Object.fromEntries(new FormData(form).entries());}
+async function mutate(action,data,msg='Alterações salvas com sucesso.'){
+  if(S.busy)return;S.busy=true;
+  try{const res=await api(action,data);S.modal=null;S.busy=false;await load();const via=res.sentido==='VOLTA'?'para casa':'para a escola';message(res.studentName?res.studentName+' · '+(res.status==='PRESENTE'?'Embarque '+via+' registrado':'Não embarcou ('+(res.sentido==='VOLTA'?'volta':'ida')+')'):msg);return res;}
+  catch(e){S.busy=false;warn(e);render();return null;}}
+async function registerCall(payload){return mutate('attendance',{day:S.day,sentido:S.sentido,routeId:S.route,...payload},'Chamada registrada.');}
+function closeModal(){if(S.modal&&S.modal.mandatory)return;S.modal=null;render();}
+async function changePassword(form){const d=formData(form);if(d.next!==d.confirm){message('A confirmação não corresponde à nova senha.',true);return;}
+  if(S.busy)return;S.busy=true;try{const r=await api('changePassword',d);S.busy=false;if(S.data)S.data.user=r.user;S.modal=null;await load();message('Sua senha foi atualizada.');}catch(e){S.busy=false;warn(e);render();}}
+async function logout(){stopCamera();try{await api('logout')}catch(e){}S.token='';S.data=null;S.sentido='IDA';STORE.remove('rc_session');STORE.remove('rc_sentido');S.modal=null;render();}
+async function startCamera(){stopCamera();if(!window.BarcodeDetector){message('Este navegador não permite a leitura automática. Use o campo de código manual.',true);return;}
+  const target=$('scannerArea');if(!target)return;
+  try{
+    const stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:'environment'}},audio:false});
+    target.innerHTML='<div class="scanner"><video playsinline autoplay muted id="qrVideo"></video><div style="display:flex;align-items:center;justify-content:space-between;margin-top:10px"><small>Aponte a câmera para o crachá do estudante</small><button class="btn small" data-act="stopCamera">Encerrar</button></div></div>';
+    const video=$('qrVideo');video.srcObject=stream;await video.play();S.camera={stream,video,detector:new BarcodeDetector({formats:['qr_code']}),reading:false};
+    S.scannerTimer=setInterval(async()=>{const camera=S.camera;if(!camera||camera.reading||video.readyState<2)return;camera.reading=true;try{
+      const codes=await camera.detector.detect(video);if(codes.length){const code=codes[0].rawValue;if(code&&code.startsWith('TC:')){stopCamera();await registerCall({qr:code,status:'PRESENTE'});}}
+    }catch(e){}finally{if(camera)camera.reading=false;}},420);
+  }catch(e){stopCamera();warn(Error('Não foi possível ativar a câmera. Confira a permissão de acesso ou use o código manual.'));}
+}
+function stopCamera(){if(S.scannerTimer)clearInterval(S.scannerTimer);S.scannerTimer=null;if(S.camera){S.camera.stream.getTracks().forEach(t=>t.stop());S.camera=null;}const area=$('scannerArea');if(area)area.innerHTML='';}
+async function handleClick(e){const b=e.target.closest('[data-act]');if(!b)return;const act=b.dataset.act,id=b.dataset.id,type=b.dataset.type;
+  if(act==='overlay'){if(e.target===b)closeModal();return;}
+  if(act==='menu'){S.menu=!S.menu;render();return;}
+  if(act==='chooseDirection'){
+    if(S.busy)return;
+    const direction=b.dataset.direction;
+    if(direction!=='IDA'&&direction!=='VOLTA')return;
+    stopCamera();
+    S.sentido=direction;
+    STORE.set('rc_sentido',direction);
+    if(b.dataset.context==='quick'){S.view='attendance';S.menu=false;window.scrollTo(0,0);}
+    render();return;
+  }
+  if(act==='nav'){stopCamera();S.view=b.dataset.view;S.menu=false;S.modal=null;render();window.scrollTo(0,0);return;}
+  if(act==='refresh'){await load(true);message('Dados atualizados.');return;}
+  if(act==='logout'){await logout();return;}
+  if(act==='password'){S.modal={type:'password',mandatory:false};render();return;}
+  if(act==='new'){openModal(type,null);return;}
+  if(act==='edit'){openModal(type,id);return;}
+  if(act==='closeModal'){closeModal();return;}
+  if(act==='badge'){printBadge(id);return;}
+  if(act==='assign'){S.modal={type:'assign',id};render();return;}
+  if(act==='newYear'){S.modal={type:'year'};render();return;}
+  if(act==='print'){stopCamera();window.print();return;}
+  if(act==='export'){exportCSV(b.dataset.what);return;}
+  if(act==='resetFilters'){S.filters={search:'',school:'',route:'',stop:''};render();return;}
+  if(act==='disable'){
+    if(!confirm('Desativar este registro? Estudantes e referências vinculadas poderão impedir a operação.'))return;
+    await mutate('disable',{type,id},'Registro desativado.');return;
+  }
+  if(act==='mark'){
+    if(S.busy)return;
+    const existing=a('calls').find(c=>c.estudanteId===id&&c.sentido===S.sentido);
+    if(existing&&existing.status!==b.dataset.status&&!confirm('Alterar o embarque já registrado de '+(find('students',id)?.nome||'este estudante')+' na '+(S.sentido==='IDA'?'ida':'volta')+'?'))return;
+    await registerCall({studentId:id,status:b.dataset.status});return;
+  }
+  if(act==='qrManual'){
+    const code=$('qrManual')&&$('qrManual').value.trim();if(!code){message('Informe o código do crachá.',true);return;}
+    await registerCall({qr:code,status:'PRESENTE'});return;
+  }
+  if(act==='startCamera'){await startCamera();return;}
+  if(act==='stopCamera'){stopCamera();return;}
+}
+async function handleSubmit(e){const form=e.target;e.preventDefault();
+  if(form.id==='loginForm'){
+    if(S.busy)return;S.busy=true;const x=formData(form);render();try{const r=await api('login',x);S.token=r.token;STORE.set('rc_session',S.token);S.busy=false;await load();}catch(err){S.busy=false;warn(err);render();}return;
+  }
+  if(form.id!=='modalForm')return;const what=form.dataset.form;
+  if(what==='password'){await changePassword(form);return;}
+  const x=formData(form),m=S.modal;if(!m)return;
+  if(what==='year'){if(!/^20\d{2}$/.test(x.year)){message('Ano inválido.',true);return;}const r=await mutate('createYear',{year:x.year},'Novo ano letivo criado.');if(r){S.year=x.year;await load();}return;}
+  if(what==='assign'){const ids=Array.from(form.querySelectorAll('input[name=routeId]:checked')).map(x=>x.value);await mutate('setAssignments',{userId:m.id,routeIds:ids,year:S.year},'Rotas do monitor atualizadas.');return;}
+  x.id=m.id||'';if(what==='student'&&role()==='monitor'){
+    const student=find('students',m.id);if(!student)return;await mutate('save',{type:'student',year:student.ano,item:{id:m.id,rotaId:x.rotaId,pontoId:x.pontoId}});return;
+  }
+  if(what==='student'||what==='route'||what==='class'){x.ano=S.year;if(role()==='escola')x.escolaId=user().escolaId;}
+  if(what==='user'){if(m.id)x.id=m.id;await mutate('createUser',{item:x},'Usuário cadastrado ou atualizado.');return;}
+  await mutate('save',{type:what,year:S.year,item:x});
+}
+function handleChange(e){const target=e.target,id=target.id;
+  if(id==='yearSelect'){stopCamera();S.year=target.value;S.filters={search:'',school:'',route:'',stop:''};S.route='';load(true);return;}
+  if(id==='filterSchool'){S.filters.school=target.value;S.filters.route='';S.filters.stop='';render();return;}
+  if(id==='filterRoute'){S.filters.route=target.value;S.filters.stop='';render();return;}
+  if(id==='filterStop'){S.filters.stop=target.value;render();return;}
+  if(id==='callRoute'){S.route=target.value;stopCamera();render();return;}
+  if(id==='callDay'){S.day=target.value;stopCamera();load(true);return;}
+  if(target.dataset.cascade&&S.modal){const f=$('modalForm');if(!f)return;const x=formData(f);S.modal.draft={...S.modal.draft,...x};if(target.name==='escolaId'){S.modal.draft.turmaId='';S.modal.draft.rotaId='';S.modal.draft.pontoId='';}if(target.name==='rotaId')S.modal.draft.pontoId='';render();return;}
+}
+function handleInput(e){if(e.target.id!=='searchStudents')return;const input=e.target,pos=input.selectionStart;S.filters.search=input.value;render();const next=$('searchStudents');if(next){next.focus();next.setSelectionRange(pos,pos);}}
+document.addEventListener('click',e=>{handleClick(e).catch(warn);});document.addEventListener('submit',e=>{handleSubmit(e).catch(warn);});document.addEventListener('change',handleChange);document.addEventListener('input',handleInput);
+document.addEventListener('keydown',e=>{if(e.key==='Escape'&&S.modal&&!S.modal.mandatory)closeModal();});
+window.addEventListener('pagehide',stopCamera);
+render();if(S.token)load();
+})();

@@ -1,0 +1,11 @@
+.clasp.json
+.env
+*.secret
+*credentials*.json
+*credenciais*.json
+*.xlsx
+*.csv
+node_modules/
+preview-validation.html
+test_preview.py
+preview-*.png
